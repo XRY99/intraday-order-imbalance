@@ -1,36 +1,30 @@
 import pandas as pd
 import numpy as np
+from pathlib import Path
+
+from returns import SYMBOLS
 
 EXCLUDE = {2, 7, 8, 10, 12, 13, 15, 16, 17, 18, 19, 20, 22, 25, 28, 30, 32, 33, 35, 38, 52, 53}
 
 
-def load_and_merge(trades_path, quotes_path, symbol):
-    """Load raw trades/quotes and attach the quote as of 1 ms before each trade."""
-    trades = pd.read_parquet(trades_path)
-    quotes = pd.read_parquet(quotes_path)
+def load_asof(data_dir, symbols=None):
+    """Load pre-matched trade files (quote as of 1 ms before each trade).
 
-    # Integer nanoseconds -> timestamps (participant = exchange clock)
-    trades["ts_event"] = pd.to_datetime(trades["participant_timestamp"], unit="ns", utc=True)
-    quotes["ts_quote"] = pd.to_datetime(quotes["participant_timestamp"], unit="ns", utc=True)
+    Each file holds one symbol-day: massive_{SYM}_{DATE}_asof_1ms.parquet
+    """
+    files = sorted(Path(data_dir).glob("massive_*_asof_1ms.parquet"))
+    if symbols is not None:
+        files = [f for f in files if f.name.split("_")[1] in symbols]
+    if not files:
+        raise FileNotFoundError(f"No asof files found in {data_dir}")
 
-    trades["lookup_time"] = trades["ts_event"] - pd.Timedelta("1ms")
-    trades = trades.sort_values("lookup_time")
-    quotes = quotes.sort_values("ts_quote")
+    frames = []
+    for f in files:
+        frames.append(pd.read_parquet(f))
+    print(f"Loaded {len(files)} files")
 
-    df = pd.merge_asof(
-        trades,
-        quotes[["ts_quote", "bid_price", "ask_price"]],
-        left_on="lookup_time",
-        right_on="ts_quote",
-        direction="backward",
-        allow_exact_matches=False,
-    )
-
-    df = df.rename(columns={"bid_price": "bid_px_00", "ask_price": "ask_px_00"})
-    df["symbol"] = symbol
-    df = df[["ts_event", "symbol", "price", "size", "bid_px_00", "ask_px_00", "conditions"]]
+    df = pd.concat(frames, ignore_index=True)
     return df
-
 
 def parse_codes(s):
     """Turn "12,37" into {12, 37}; empty or missing -> empty set."""
@@ -88,19 +82,26 @@ def make_bars(df):
 
 
 def main():
-    df = load_and_merge(
-        "data/massive_AAPL_2024-01-03_trades.parquet",
-        "data/massive_AAPL_2024-01-03_quotes.parquet",
-        "AAPL",
-    )
-    df = filter_trades(df)
-    df = classify_lee_ready(df)
-    print(df["direction"].value_counts(dropna=False))
+    all_bars = []
+    for sym in SYMBOLS:
+        print(f"\n=== {sym} ===")
+        df = load_asof("data", symbols=[sym])  # list, not a bare string
+        df = filter_trades(df)
+        df = classify_lee_ready(df)
+        bars = make_bars(df)
+        all_bars.append(bars)
+        del df  # free memory before the next symbol
 
-    bars = make_bars(df)
-    print(bars)
-    print("Bars per symbol:")
-    print(bars.groupby("symbol").size())
+    bars = pd.concat(all_bars)
+    days = bars.index.get_level_values("ts_event").date
+    per_day = bars.groupby([bars.index.get_level_values("symbol"), days]).size()
+    print(f"\nTotal bars: {len(bars):,}")
+    print(f"Symbol-days: {len(per_day)}")
+    print("Bars per symbol-day:")
+    print(per_day.value_counts())
+
+    bars.to_parquet("data/bars_30min.parquet")
+    print("Saved data/bars_30min.parquet")
 
 
 if __name__ == "__main__":
