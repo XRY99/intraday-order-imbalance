@@ -24,7 +24,7 @@ def get_next_day_returns(symbols, start, end):
 
 
 if __name__ == "__main__":
-    rets = get_next_day_returns(SYMBOLS, start="2023-12-29", end="2024-02-02")
+    rets = get_next_day_returns(SYMBOLS, start="2023-09-29", end="2024-02-02")
     print(rets.head(12))
     print(f"Rows: {len(rets)}, symbols: {rets['symbol'].nunique()}")
 
